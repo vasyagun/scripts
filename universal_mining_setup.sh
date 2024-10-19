@@ -1,84 +1,97 @@
 #!/bin/bash
-source /etc/environment
+
+# Проверка, что скрипт выполняется от root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Скрипт должен быть запущен от root."
+    exit 1
+fi
+
+# Загрузка параметров из аргументов
+# Ожидаем, что параметры будут переданы в формате:
+# ./universal_mining_setup.sh GPU_WALLET=<ваш_кошелек_GPU> GPU_POOL=<ваш_пул_GPU>
+
+for ARG in "$@"
+do
+    case $ARG in
+        GPU_WALLET=*)
+            GPU_WALLET="${ARG#*=}"
+            shift
+            ;;
+        GPU_POOL=*)
+            GPU_POOL="${ARG#*=}"
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
+
+# Проверка наличия необходимых параметров
+if [ -z "$GPU_WALLET" ] || [ -z "$GPU_POOL" ]; then
+    echo "Необходимы параметры GPU_WALLET и GPU_POOL."
+    exit 1
+fi
 
 # Параметры
-GPU_WALLET="PLACEHOLDER_GPU_WALLET"
-GPU_POOL="PLACEHOLDER_GPU_POOL"
 WORKER="$(hostname)"
-DIR="/root/hive/miners/custom/apoolminer_hiveos_autoupdate"
-LOG_FILE="/var/log/miner/apoolminer_hiveos_autoupdate/apoolminer.log"
-LOG_SCRIPT="/var/log/miner/apoolminer_hiveos_autoupdate/qubscript.log"
-QUBIC_GPU_SCRIPT="$DIR/QUBICdualGPU.sh"
+DIR="/root/hive/miners/custom/aleo_miner"
+LOG_DIR="/var/log/miner"  # Стандартная директория логов майнеров в Hive OS
+QUBIC_LOG_FILE="$LOG_DIR/miner.log"  # Лог-файл майнера QUBIC
+ALEO_LOG_FILE="$DIR/aleo_prover.log"
 
-# Функция для логирования
-log() {
-    echo "$(date): $1" >> "$LOG_SCRIPT"
-}
+# Создание директории для майнера ALEO, если отсутствует
+mkdir -p "$DIR"
 
-# Функция для мониторинга процесса miner
-monitor_miner() {
-    local miner_running=false
-    local mining_state=""
+# Загрузка и распаковка майнера ALEO
+echo "Скачивание и распаковка майнера ALEO..."
+wget -O /tmp/aleo_prover.tar.gz https://github.com/6block/zkwork_aleo_gpu_worker/releases/download/v0.2.3-fix/aleo_prover-v0.2.3_full_fix.tar.gz
+tar -xzf /tmp/aleo_prover.tar.gz -C "$DIR"
+chmod +x "$DIR/aleo_prover/aleo_prover"
 
-    # Проверка наличия файла лога
-    while [ ! -f "$LOG_FILE" ]; do
-        log "Лог-файл не найден: $LOG_FILE. Ожидание появления файла..."
-        sleep 10  # Ждем перед следующей проверкой
-    done
+# Создание скрипта запуска майнера ALEO
+ALEO_MINER_SCRIPT="$DIR/aleo_miner.sh"
+echo "Создание скрипта aleo_miner.sh..."
+cat <<EOF > "$ALEO_MINER_SCRIPT"
+#!/bin/bash
+cd "$DIR/aleo_prover"
+/root/hive/miners/custom/aleo_miner/aleo_prover/aleo_prover --pool $GPU_POOL --address $GPU_WALLET --custom_name $WORKER >> "$ALEO_LOG_FILE" 2>&1
+EOF
+chmod +x "$ALEO_MINER_SCRIPT"
 
-    log "Лог-файл найден: $LOG_FILE. Начинаем мониторинг..."
+# Создание скрипта мониторинга
+MONITOR_SCRIPT="$DIR/monitor.sh"
+echo "Создание скрипта мониторинга monitor.sh..."
+cat <<'EOF' > "$MONITOR_SCRIPT"
+#!/bin/bash
 
-    while true; do
-        if pgrep -f "aleo_prover" > /dev/null; then
-            if [ "$miner_running" = false ]; then
-                log "Процесс aleo_prover запущен. Начинаем мониторинг лога..."
-                miner_running=true
-            fi
+# Параметры
+QUBIC_LOG_FILE="PLACEHOLDER_QUBIC_LOG_FILE"
+ALEO_MINER_SCRIPT="PLACEHOLDER_ALEO_MINER_SCRIPT"
 
-            sleep 30  # Ждем перед проверкой лога
-
-            # Получаем последние 20 строк из лог-файла
-            last_lines=$(tail -n 20 "$LOG_FILE")
-
-            if echo "$last_lines" | grep -q "qubic mining idle now!"; then
-                if [ "$mining_state" != "idle" ]; then
-                    log "Qubic mining idle now! Перезапуск ALEO майнера."
-                    # Перезапуск miner
-                    screen -S miner -X stuff $'\003'
-                    sleep 5
-                    screen -dmS QUBICdualGPU bash "$QUBIC_GPU_SCRIPT"
-                    mining_state="idle"
-                fi
-            elif echo "$last_lines" | grep -q "qubic mining work now!"; then
-                if [ "$mining_state" != "work" ]; then
-                    log "Qubic mining work now! Остановка ALEO майнера."
-                    screen -S QUBICdualGPU -X stuff $'\003'
-                    sleep 5
-                    screen -S miner -X stuff $'\003'  # Перезапускаем miner после остановки процессов
-                    mining_state="work"
-                fi
-            elif echo "$last_lines" | grep -q "out of memory"; then
-                if [ "$mining_state" != "work" ]; then
-                    log "Out of memory detected. Остановка ALEO майнера."
-                    screen -S QUBICdualGPU -X stuff $'\003'
-                    mining_state="work"
-                fi
-            fi
-
-        else
-            if [ "$miner_running" = true ]; then
-                log "Процесс aleo_prover не запущен."
-                miner_running=false
-            fi
-            # Останавливаем процессы QUBICdualGPU, если miner не запущен
-            screen -S QUBICdualGPU -X stuff $'\003'
+# Функция для мониторинга логов майнера QUBIC
+monitor_qubic() {
+    tail -n0 -F "$QUBIC_LOG_FILE" | while read LINE; do
+        if echo "$LINE" | grep -q "qubic mining idle now!"; then
+            echo "$(date): Detected idle state in QUBIC miner. Starting ALEO miner..."
+            screen -dmS aleo_miner bash "$ALEO_MINER_SCRIPT"
+        elif echo "$LINE" | grep -q "qubic mining work now!"; then
+            echo "$(date): Detected work state in QUBIC miner. Stopping ALEO miner..."
+            screen -S aleo_miner -X quit
         fi
-
-        sleep 10  # Проверяем каждые 10 секунд, запущен ли процесс miner
     done
 }
 
-# Запуск майнера и мониторинга
-screen -dmS miner bash "$QUBIC_GPU_SCRIPT"
-monitor_miner
+# Запуск мониторинга
+monitor_qubic
+EOF
 
+# Вставка реальных путей в скрипт мониторинга
+sed -i "s|PLACEHOLDER_QUBIC_LOG_FILE|$QUBIC_LOG_FILE|" "$MONITOR_SCRIPT"
+sed -i "s|PLACEHOLDER_ALEO_MINER_SCRIPT|$ALEO_MINER_SCRIPT|" "$MONITOR_SCRIPT"
+chmod +x "$MONITOR_SCRIPT"
+
+# Запуск скрипта мониторинга в screen
+echo "Запуск скрипта мониторинга в screen..."
+screen -dmS monitor bash "$MONITOR_SCRIPT"
+
+echo "Установка и настройка майнинга завершены."
