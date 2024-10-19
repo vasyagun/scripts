@@ -1,97 +1,88 @@
 #!/bin/bash
-
-# Проверка, что скрипт выполняется от root
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Скрипт должен быть запущен от root."
-    exit 1
-fi
-
-# Загрузка параметров из аргументов
-# Ожидаем, что параметры будут переданы в формате:
-# ./universal_mining_setup.sh GPU_WALLET=<ваш_кошелек_GPU> GPU_POOL=<ваш_пул_GPU>
-
-for ARG in "$@"
-do
-    case $ARG in
-        GPU_WALLET=*)
-            GPU_WALLET="${ARG#*=}"
-            shift
-            ;;
-        GPU_POOL=*)
-            GPU_POOL="${ARG#*=}"
-            shift
-            ;;
-        *)
-            ;;
-    esac
-done
-
-# Проверка наличия необходимых параметров
-if [ -z "$GPU_WALLET" ] || [ -z "$GPU_POOL" ]; then
-    echo "Необходимы параметры GPU_WALLET и GPU_POOL."
-    exit 1
-fi
+source /etc/environment
 
 # Параметры
+GPU_WALLET="aleo19d04yrfncggt8e4qdyp3dh5stsvsjza4npdqefncgasc2xmu9sxqk7ys5r"
+GPU_POOL="aleo.hk.zk.work:10003"
+LOG_FILE="/var/log/miner/apoolminer_hiveos_autoupdate/apoolminer.log"
 WORKER="$(hostname)"
-DIR="/root/hive/miners/custom/aleo_miner"
-LOG_DIR="/var/log/miner"  # Стандартная директория логов майнеров в Hive OS
-QUBIC_LOG_FILE="$LOG_DIR/miner.log"  # Лог-файл майнера QUBIC
-ALEO_LOG_FILE="$DIR/aleo_prover.log"
+DIR="/root/hive/miners/custom/scripts"
+QUBIC_GPU_SCRIPT="$DIR/QUBICdualGPU.sh"
 
-# Создание директории для майнера ALEO, если отсутствует
-mkdir -p "$DIR"
+# Проверка наличия директории и создание, если отсутствует
+if [ ! -d "$DIR" ]; then
+    mkdir -p "$DIR"
+    echo "Создана папка: $DIR"
+fi
 
-# Загрузка и распаковка майнера ALEO
-echo "Скачивание и распаковка майнера ALEO..."
-wget -O /tmp/aleo_prover.tar.gz https://github.com/6block/zkwork_aleo_gpu_worker/releases/download/v0.2.3-fix/aleo_prover-v0.2.3_full_fix.tar.gz
-tar -xzf /tmp/aleo_prover.tar.gz -C "$DIR"
-chmod +x "$DIR/aleo_prover/aleo_prover"
+# Проверка наличия скрипта QUBICdualGPU.sh
+if [ ! -f "$QUBIC_GPU_SCRIPT" ]; then
+    echo -e "#!/bin/bash\n/root/hive/miners/custom/aleo_prover/aleo_prover --pool $GPU_POOL --address $GPU_WALLET --custom_name $WORKER" > "$QUBIC_GPU_SCRIPT"
+    chmod +x "$QUBIC_GPU_SCRIPT"
+    echo "Создан файл: $QUBIC_GPU_SCRIPT"
+fi
 
-# Создание скрипта запуска майнера ALEO
-ALEO_MINER_SCRIPT="$DIR/aleo_miner.sh"
-echo "Создание скрипта aleo_miner.sh..."
-cat <<EOF > "$ALEO_MINER_SCRIPT"
-#!/bin/bash
-cd "$DIR/aleo_prover"
-/root/hive/miners/custom/aleo_miner/aleo_prover/aleo_prover --pool $GPU_POOL --address $GPU_WALLET --custom_name $WORKER >> "$ALEO_LOG_FILE" 2>&1
-EOF
-chmod +x "$ALEO_MINER_SCRIPT"
+# Функция для мониторинга процесса майнинга
+monitor_miner() {
+    local miner_running=false
+    local mining_state=""
 
-# Создание скрипта мониторинга
-MONITOR_SCRIPT="$DIR/monitor.sh"
-echo "Создание скрипта мониторинга monitor.sh..."
-cat <<'EOF' > "$MONITOR_SCRIPT"
-#!/bin/bash
+    # Проверка наличия файла лога
+    while [ ! -f "$LOG_FILE" ]; do
+        echo "Лог-файл не найден: $LOG_FILE. Ожидание появления файла..."
+        sleep 10  # Ждем перед следующей проверкой
+    done
 
-# Параметры
-QUBIC_LOG_FILE="PLACEHOLDER_QUBIC_LOG_FILE"
-ALEO_MINER_SCRIPT="PLACEHOLDER_ALEO_MINER_SCRIPT"
+    echo "Лог-файл найден: $LOG_FILE. Начинаем мониторинг..."
 
-# Функция для мониторинга логов майнера QUBIC
-monitor_qubic() {
-    tail -n0 -F "$QUBIC_LOG_FILE" | while read LINE; do
-        if echo "$LINE" | grep -q "qubic mining idle now!"; then
-            echo "$(date): Detected idle state in QUBIC miner. Starting ALEO miner..."
-            screen -dmS aleo_miner bash "$ALEO_MINER_SCRIPT"
-        elif echo "$LINE" | grep -q "qubic mining work now!"; then
-            echo "$(date): Detected work state in QUBIC miner. Stopping ALEO miner..."
-            screen -S aleo_miner -X quit
+    while true; do
+        if pgrep -f "miner" > /dev/null; then
+            if [ "$miner_running" = false ]; then
+                echo "Процесс miner запущен. Начинаем мониторинг лога..."
+                miner_running=true
+            fi
+
+            sleep 30  # Ждем перед проверкой лога
+
+            # Получаем последние 20 строк из лог-файла
+            last_lines=$(tail -n 20 "$LOG_FILE")
+
+            if echo "$last_lines" | grep -q "qubic mining idle now!"; then
+                if [ "$mining_state" != "idle" ]; then
+                    echo "$(date): Начинается майнинг Aleo"
+                    screen -dmS QUBICdualGPU bash "$QUBIC_GPU_SCRIPT"
+                    mining_state="idle"
+                    screen -S miner -X stuff $'\003'  # Перезапуск майнера после изменения состояния
+                fi
+            elif echo "$last_lines" | grep -q "qubic mining work now!"; then
+                if [ "$mining_state" != "work" ]; then
+                    echo "$(date): Майнинг Qubic снова активен"
+                    screen -S QUBICdualGPU -X stuff $'\003'
+                    mining_state="work"
+                fi
+            elif echo "$last_lines" | grep -q "out of memory"; then
+                if [ "$mining_state" != "work" ]; then
+                    echo "$(date): Недостаточно памяти"
+                    screen -S QUBICdualGPU -X stuff $'\003'
+                    mining_state="work"
+                    screen -S miner -X stuff $'\003'  # Перезапуск майнера
+                fi
+            fi
+
+        else
+            if [ "$miner_running" = true ]; then
+                echo "Процесс miner не запущен."
+                miner_running=false
+            fi
+
+            # Останавливаем процессы QUBICdualGPU, если miner не запущен
+            screen -S QUBICdualGPU -X stuff $'\003'
         fi
+
+        sleep 10  # Проверяем состояние каждые 10 секунд
     done
 }
 
 # Запуск мониторинга
-monitor_qubic
-EOF
+monitor_miner
 
-# Вставка реальных путей в скрипт мониторинга
-sed -i "s|PLACEHOLDER_QUBIC_LOG_FILE|$QUBIC_LOG_FILE|" "$MONITOR_SCRIPT"
-sed -i "s|PLACEHOLDER_ALEO_MINER_SCRIPT|$ALEO_MINER_SCRIPT|" "$MONITOR_SCRIPT"
-chmod +x "$MONITOR_SCRIPT"
-
-# Запуск скрипта мониторинга в screen
-echo "Запуск скрипта мониторинга в screen..."
-screen -dmS monitor bash "$MONITOR_SCRIPT"
-
-echo "Установка и настройка майнинга завершены."
