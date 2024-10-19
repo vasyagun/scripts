@@ -1,9 +1,30 @@
 #!/bin/bash
 source /etc/environment
 
+# Получение параметров из аргументов командной строки
+for ARG in "$@"
+do
+    case $ARG in
+        GPU_WALLET=*)
+            GPU_WALLET="${ARG#*=}"
+            shift
+            ;;
+        GPU_POOL=*)
+            GPU_POOL="${ARG#*=}"
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
+
+# Проверка, что параметры были переданы
+if [ -z "$GPU_WALLET" ] || [ -z "$GPU_POOL" ]; then
+    echo "Необходимы параметры GPU_WALLET и GPU_POOL."
+    exit 1
+fi
+
 # Параметры
-GPU_WALLET="aleo19d04yrfncggt8e4qdyp3dh5stsvsjza4npdqefncgasc2xmu9sxqk7ys5r"
-GPU_POOL="aleo.hk.zk.work:10003"
 LOG_FILE="/var/log/miner/apoolminer_hiveos_autoupdate/apoolminer.log"
 WORKER="$(hostname)"
 DIR="/root/hive/miners/custom/scripts"
@@ -15,27 +36,28 @@ if [ ! -d "$DIR" ]; then
     echo "Создана папка: $DIR"
 fi
 
-# Проверка наличия скрипта QUBICdualGPU.sh
+# Создание скрипта для майнера ALEO
 if [ ! -f "$QUBIC_GPU_SCRIPT" ]; then
     echo -e "#!/bin/bash\n/root/hive/miners/custom/aleo_prover/aleo_prover --pool $GPU_POOL --address $GPU_WALLET --custom_name $WORKER" > "$QUBIC_GPU_SCRIPT"
     chmod +x "$QUBIC_GPU_SCRIPT"
     echo "Создан файл: $QUBIC_GPU_SCRIPT"
 fi
 
-# Функция для мониторинга процесса майнинга
+# Функция для мониторинга майнера QUBIC и управления майнером ALEO
 monitor_miner() {
     local miner_running=false
     local mining_state=""
 
-    # Проверка наличия файла лога
+    # Ожидание появления лог-файла майнера QUBIC
     while [ ! -f "$LOG_FILE" ]; do
-        echo "Лог-файл не найден: $LOG_FILE. Ожидание появления файла..."
-        sleep 10  # Ждем перед следующей проверкой
+        echo "Лог-файл не найден: $LOG_FILE. Ожидание..."
+        sleep 10
     done
 
     echo "Лог-файл найден: $LOG_FILE. Начинаем мониторинг..."
 
     while true; do
+        # Проверяем, запущен ли процесс майнера QUBIC
         if pgrep -f "miner" > /dev/null; then
             if [ "$miner_running" = false ]; then
                 echo "Процесс miner запущен. Начинаем мониторинг лога..."
@@ -44,7 +66,7 @@ monitor_miner() {
 
             sleep 30  # Ждем перед проверкой лога
 
-            # Получаем последние 20 строк из лог-файла
+            # Читаем последние 20 строк из лог-файла
             last_lines=$(tail -n 20 "$LOG_FILE")
 
             if echo "$last_lines" | grep -q "qubic mining idle now!"; then
@@ -85,4 +107,5 @@ monitor_miner() {
 
 # Запуск мониторинга
 monitor_miner
+
 
