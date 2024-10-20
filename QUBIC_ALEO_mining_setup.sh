@@ -51,7 +51,7 @@ monitor_miner() {
     # Ожидание появления лог-файла майнера QUBIC
     while [ ! -f "$LOG_FILE" ]; do
         echo "Лог-файл не найден: $LOG_FILE. Ожидание..."
-        sleep 30
+        sleep 10
     done
 
     echo "Лог-файл найден: $LOG_FILE. Начинаем мониторинг..."
@@ -64,7 +64,7 @@ monitor_miner() {
                 miner_running=true
             fi
 
-            sleep 5  # Ждем перед проверкой лога
+            sleep 30  # Ждем перед проверкой лога
 
             # Читаем последние 20 строк из лог-файла
             last_lines=$(tail -n 20 "$LOG_FILE")
@@ -101,7 +101,7 @@ monitor_miner() {
             screen -S QUBICdualGPU -X stuff $'\003'
         fi
 
-        sleep 5  # Проверяем состояние каждые 10 секунд
+        sleep 10  # Проверяем состояние каждые 10 секунд
     done
 }
 
