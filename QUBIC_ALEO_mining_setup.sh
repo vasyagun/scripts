@@ -84,10 +84,12 @@ monitor_miner() {
                 fi
             elif echo "$last_lines" | grep -q "out of memory"; then
                 if [ "$mining_state" != "work" ]; then
-                    echo "$(date): Недостаточно памяти"
+                    echo "$(date): Недостаточно памяти, перезапуск майнера QUBIC через 10 секунд..."
                     screen -S QUBICdualGPU -X stuff $'\003'
                     mining_state="work"
-                    screen -S miner -X stuff $'\003'  # Перезапуск майнера
+                    sleep 10  # Задержка для освобождения ресурсов
+                    echo "Перезапуск майнера QUBIC"
+                    miner restart  # Перезапуск майнера
                 fi
             fi
 
@@ -107,5 +109,3 @@ monitor_miner() {
 
 # Запуск мониторинга
 monitor_miner
-
-
