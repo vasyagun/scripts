@@ -21,12 +21,12 @@ cd ap
 curl -OL https://raw.githubusercontent.com/rakot7/rentalscripts/main/run.sh
 cat <<EOF > miner.conf
 algo=qubic
-account=CP_3kv3xuwg6d
+account=CP_sq88cjfuh5
 pool=qubic1.hk.apool.io:3334
 
 worker = $1
 cpu-off = true
-#thread = 12
+#thread = 10
 #gpu-off = false
 #gpu = 0,1,2
 mode = 1
